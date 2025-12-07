@@ -24,6 +24,10 @@ struct Args {
     #[arg(short, long, default_value_t = 3000)]
     port: u16,
 
+    /// Host to listen on
+    #[arg(long, default_value = "0.0.0.0")]
+    host: String,
+
     /// Custom UUID for the subscription URL. If not provided, a random one will be generated.
     #[arg(short, long)]
     uuid: Option<String>,
@@ -98,9 +102,14 @@ async fn main() -> anyhow::Result<()> {
         .route("/sub", get(handle_subscription)) // Fixed path /sub
         .with_state(state);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
-    println!("Server running on http://0.0.0.0:{}/sub?token={}", args.port, sub_uuid);
-    println!("Subscription link: http://127.0.0.1:{}/sub?token={}", args.port, sub_uuid);
+    let host_ip: std::net::IpAddr = args.host.parse().expect("Invalid host IP address");
+    let addr = SocketAddr::from((host_ip, args.port));
+    println!("Server running on http://{}:{}/sub?token={}", args.host, args.port, sub_uuid);
+    if args.host == "0.0.0.0" {
+        println!("Subscription link: http://127.0.0.1:{}/sub?token={}", args.port, sub_uuid);
+    } else {
+        println!("Subscription link: http://{}:{}/sub?token={}", args.host, args.port, sub_uuid);
+    }
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
