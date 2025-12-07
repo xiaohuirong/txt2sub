@@ -1,6 +1,7 @@
 use anyhow::Result;
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::Value as JsonValue;
+use serde_yaml::Value as YamlValue;
 use url::Url;
 use std::collections::HashMap;
 use base64::{Engine as _, engine::general_purpose};
@@ -130,7 +131,7 @@ pub struct ProxyGroup {
 }
 
 
-pub fn generate_clash_yaml(links: Vec<String>) -> Result<String> {
+pub fn generate_clash_yaml(links: Vec<String>, template: Option<String>) -> Result<String> {
     let mut proxies = Vec::new();
     let mut proxy_names = Vec::new();
 
@@ -157,39 +158,119 @@ pub fn generate_clash_yaml(links: Vec<String>) -> Result<String> {
         }
     }
 
-    // Default Groups
-    let mut groups = Vec::new();
-    
-    // Proxy Select Group
-    let mut select_proxies = vec!["Auto".to_string()];
-    select_proxies.extend(proxy_names.clone());
-    groups.push(ProxyGroup {
-        name: "Proxy".to_string(),
-        group_type: "select".to_string(),
-        proxies: select_proxies,
-        url: None,
-        interval: None,
-    });
+    if let Some(tmpl_str) = template {
+        // --- Template Merging Logic ---
+        let mut doc: YamlValue = serde_yaml::from_str(&tmpl_str)?;
 
-    // Auto Select Group
-    groups.push(ProxyGroup {
-        name: "Auto".to_string(),
-        group_type: "url-test".to_string(),
-        proxies: proxy_names,
-        url: Some("http://www.gstatic.com/generate_204".to_string()),
-        interval: Some(300),
-    });
+        // 1. Merge Proxies
+        // Ensure "proxies" key exists and is a sequence
+        if doc.get("proxies").is_none() {
+            if let Some(mapping) = doc.as_mapping_mut() {
+                mapping.insert(YamlValue::String("proxies".to_string()), YamlValue::Sequence(Vec::new()));
+            }
+        }
 
-    let config = ClashConfig {
-        proxies,
-        proxy_groups: groups,
-        rules: vec![
-            "MATCH,Proxy".to_string(),
-        ],
-    };
+        if let Some(proxies_seq) = doc.get_mut("proxies").and_then(|v| v.as_sequence_mut()) {
+            for proxy in proxies {
+                let proxy_val = serde_yaml::to_value(proxy)?;
+                proxies_seq.push(proxy_val);
+            }
+        }
 
-    let yaml = serde_yaml::to_string(&config)?;
-    Ok(yaml)
+        // 2. Merge into "PROXY" Group
+        // Ensure "proxy-groups" key exists and is a sequence
+        if doc.get("proxy-groups").is_none() {
+            if let Some(mapping) = doc.as_mapping_mut() {
+                mapping.insert(YamlValue::String("proxy-groups".to_string()), YamlValue::Sequence(Vec::new()));
+            }
+        }
+
+        let mut proxy_group_found = false;
+        
+        if let Some(groups_seq) = doc.get_mut("proxy-groups").and_then(|v| v.as_sequence_mut()) {
+            for group in groups_seq.iter_mut() {
+                // Check if group name is "PROXY"
+                let is_target_group = group.get("name")
+                    .and_then(|n| n.as_str())
+                    .map(|s| s == "PROXY")
+                    .unwrap_or(false);
+
+                if is_target_group {
+                    proxy_group_found = true;
+                    // Append generated proxy names to this group
+                    if let Some(group_proxies) = group.get_mut("proxies").and_then(|v| v.as_sequence_mut()) {
+                        for name in &proxy_names {
+                            group_proxies.push(YamlValue::String(name.clone()));
+                        }
+                    } else {
+                        // If "proxies" key is missing in the group, create it
+                         if let Some(mapping) = group.as_mapping_mut() {
+                            let mut new_proxies = Vec::new();
+                            for name in &proxy_names {
+                                new_proxies.push(YamlValue::String(name.clone()));
+                            }
+                            mapping.insert(YamlValue::String("proxies".to_string()), YamlValue::Sequence(new_proxies));
+                         }
+                    }
+                    break; 
+                }
+            }
+
+            // If "PROXY" group not found, create it
+            if !proxy_group_found {
+                 let mut new_group_proxies = Vec::new();
+                 // Optionally add "Auto" or others if you want, but user asked for "all proxies"
+                 for name in &proxy_names {
+                     new_group_proxies.push(YamlValue::String(name.clone()));
+                 }
+
+                 let mut new_group = serde_yaml::Mapping::new();
+                 new_group.insert(YamlValue::String("name".to_string()), YamlValue::String("PROXY".to_string()));
+                 new_group.insert(YamlValue::String("type".to_string()), YamlValue::String("select".to_string()));
+                 new_group.insert(YamlValue::String("proxies".to_string()), YamlValue::Sequence(new_group_proxies));
+                 
+                 groups_seq.push(YamlValue::Mapping(new_group));
+            }
+        }
+
+        return Ok(serde_yaml::to_string(&doc)?);
+
+    } else {
+        // --- Default Logic (No Template) ---
+        // Default Groups
+        let mut groups = Vec::new();
+        
+        // Proxy Select Group
+        let mut select_proxies = vec!["Auto".to_string()];
+        select_proxies.extend(proxy_names.clone());
+        groups.push(ProxyGroup {
+            name: "Proxy".to_string(),
+            group_type: "select".to_string(),
+            proxies: select_proxies,
+            url: None,
+            interval: None,
+        });
+
+        // Auto Select Group
+        groups.push(ProxyGroup {
+            name: "Auto".to_string(),
+            group_type: "url-test".to_string(),
+            proxies: proxy_names,
+            url: Some("http://www.gstatic.com/generate_204".to_string()),
+            interval: Some(300),
+        });
+
+        let config = ClashConfig {
+            proxies,
+            proxy_groups: groups,
+            rules: vec![
+                "MATCH,Proxy".to_string(),
+            ],
+        };
+
+        let yaml = serde_yaml::to_string(&config)?;
+        Ok(yaml)
+    }
 }
 
 fn parse_vless(link: &str) -> Option<Proxy> {
@@ -263,7 +344,7 @@ fn parse_vmess(link: &str) -> Option<Proxy> {
     let base64_part = link.trim_start_matches("vmess://");
     let decoded_bytes = general_purpose::STANDARD.decode(base64_part).ok()?;
     let json_str = String::from_utf8(decoded_bytes).ok()?;
-    let v: Value = serde_json::from_str(&json_str).ok()?;
+    let v: JsonValue = serde_json::from_str(&json_str).ok()?;
 
     let name = v["ps"].as_str().unwrap_or("VMess Node").to_string();
     let server = v["add"].as_str()?.to_string();

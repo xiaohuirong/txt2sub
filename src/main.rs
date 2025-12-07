@@ -27,12 +27,17 @@ struct Args {
     /// Custom UUID for the subscription URL. If not provided, a random one will be generated.
     #[arg(short, long)]
     uuid: Option<String>,
+
+    /// Path to the Clash config template (optional)
+    #[arg(short, long)]
+    template: Option<PathBuf>,
 }
 
 #[derive(Clone)]
 struct AppState {
     file_path: PathBuf,
     sub_uuid: String,
+    template_path: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -47,10 +52,18 @@ async fn main() -> anyhow::Result<()> {
         eprintln!("Error: File {:?} does not exist.", args.file);
         std::process::exit(1);
     }
+    
+    if let Some(tmpl) = &args.template {
+         if !tmpl.exists() {
+            eprintln!("Error: Template file {:?} does not exist.", tmpl);
+            std::process::exit(1);
+        }
+    }
 
     let state = Arc::new(AppState {
         file_path: args.file.clone(),
         sub_uuid: sub_uuid.clone(), // Store the UUID in the app state
+        template_path: args.template.clone(),
     });
 
     // Build the router with a fixed path, expecting the UUID as a query parameter
@@ -113,8 +126,18 @@ async fn handle_subscription(
         || params.get("flag").map(|v| v.as_str()) == Some("clash");
 
     if is_clash {
+        // Read template if available
+        let template_content = if let Some(path) = &state.template_path {
+            let tmpl = fs::read_to_string(path)
+                .await
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to read template: {}", e)))?;
+            Some(tmpl)
+        } else {
+            None
+        };
+
         // Generate Clash YAML
-        let yaml_content = clash_generator::generate_clash_yaml(raw_links)
+        let yaml_content = clash_generator::generate_clash_yaml(raw_links, template_content)
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to generate Clash config: {}", e)))?;
         
         let mut headers = HeaderMap::new();
