@@ -96,6 +96,8 @@ pub struct VlessProxy {
     pub server: String,
     pub port: u16,
     pub uuid: String,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "flow")]
+    pub flow: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub udp: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -369,6 +371,8 @@ fn parse_vless(link: &str) -> Option<Proxy> {
     let type_ = query.get("type").map(|s| s.to_string());
     let sni = query.get("sni").map(|s| s.to_string());
     let fp = query.get("fp").map(|s| s.to_string());
+    let flow = query.get("flow").map(|s| s.to_string());
+    let allow_insecure = query.get("allowInsecure").map(|s| s == "1" || s == "true").unwrap_or(false);
     
     // Reality check
     let reality_opts = if security.as_deref() == Some("reality") {
@@ -411,9 +415,10 @@ fn parse_vless(link: &str) -> Option<Proxy> {
         server,
         port,
         uuid,
+        flow,
         udp: Some(true),
         tls: Some(security.is_some()), // simplified
-        skip_cert_verify: Some(true),
+        skip_cert_verify: if allow_insecure { Some(true) } else { None },
         servername: sni,
         network,
         client_fingerprint: fp,
