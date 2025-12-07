@@ -1,10 +1,11 @@
 use axum::{
-    extract::State,
+    extract::{Query, State},
+    http::StatusCode,
     routing::get,
     Router,
 };
 use clap::Parser;
-use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc};
 use tokio::fs;
 use uuid::Uuid;
 use base64::{Engine as _, engine::general_purpose};
@@ -28,6 +29,7 @@ struct Args {
 #[derive(Clone)]
 struct AppState {
     file_path: PathBuf,
+    sub_uuid: String,
 }
 
 #[tokio::main]
@@ -45,17 +47,17 @@ async fn main() -> anyhow::Result<()> {
 
     let state = Arc::new(AppState {
         file_path: args.file.clone(),
+        sub_uuid: sub_uuid.clone(), // Store the UUID in the app state
     });
 
-    // Build the router with a dynamic route based on the UUID
-    // The route is exactly /{uuid}, preventing access without it.
+    // Build the router with a fixed path, expecting the UUID as a query parameter
     let app = Router::new()
-        .route(&format!("/{}", sub_uuid), get(handle_subscription))
+        .route("/sub", get(handle_subscription)) // Fixed path /sub
         .with_state(state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
-    println!("Server running on http://0.0.0.0:{}/{}", args.port, sub_uuid);
-    println!("Subscription link: http://127.0.0.1:{}/{}", args.port, sub_uuid);
+    println!("Server running on http://0.0.0.0:{}/sub?token={}", args.port, sub_uuid);
+    println!("Subscription link: http://127.0.0.1:{}/sub?token={}", args.port, sub_uuid);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
@@ -63,11 +65,23 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn handle_subscription(State(state): State<Arc<AppState>>) -> Result<String, String> {
+
+
+async fn handle_subscription(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<String, (StatusCode, String)> {
+    let token = params.get("token");
+
+    // Check if token exists and matches the expected sub_uuid
+    if token.is_none() || token.unwrap() != &state.sub_uuid {
+        return Err((StatusCode::FORBIDDEN, "Invalid or missing token".to_string()));
+    }
+
     // Read the file content
     let content = fs::read_to_string(&state.file_path)
         .await
-        .map_err(|e| format!("Failed to read file: {}", e))?;
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to read file: {}", e)))?;
 
     // Process lines: trim, remove empty lines, remove comments
     let mut processed_lines = Vec::new();
