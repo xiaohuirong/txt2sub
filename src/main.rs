@@ -25,7 +25,7 @@ struct Args {
     port: u16,
 
     /// Host to listen on
-    #[arg(long, default_value = "0.0.0.0")]
+    #[arg(short = 'L', long, default_value = "0.0.0.0")]
     host: String,
 
     /// Custom UUID for the subscription URL. If not provided, a random one will be generated.

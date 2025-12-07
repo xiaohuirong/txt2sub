@@ -43,6 +43,7 @@ Usage: txt2sub [OPTIONS]
 Options:
   -f, --file <FILE>        Path to the text file containing subscription links
   -p, --port <PORT>        Port to listen on [default: 3000]
+  -L, --host <HOST>        Host to listen on [default: 0.0.0.0]
   -u, --uuid <UUID>        Custom UUID for the subscription URL. If not provided, a random one will be generated.
   -t, --template <TEMPLATE>  Path to the Clash config template (optional)
   -o, --output <OUTPUT>    Path to output the generated Clash config file. If specified, the server will not start.
@@ -120,7 +121,7 @@ Options:
 3.  **Run the server:**
 
     ```bash
-    ./target/release/txt2sub -f my_subs.txt -t clash_template.yaml -u my-secret-token -p 8080
+    ./target/release/txt2sub -f my_subs.txt -t clash_template.yaml -u my-secret-token -p 8080 -L 0.0.0.0
     ```
 
     The server will start and print the generated subscription links:
