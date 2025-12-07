@@ -31,6 +31,10 @@ struct Args {
     /// Path to the Clash config template (optional)
     #[arg(short, long)]
     template: Option<PathBuf>,
+
+    /// Path to output the generated Clash config file. If specified, the server will not start.
+    #[arg(short, long)]
+    output: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -58,6 +62,29 @@ async fn main() -> anyhow::Result<()> {
             eprintln!("Error: Template file {:?} does not exist.", tmpl);
             std::process::exit(1);
         }
+    }
+
+    if let Some(output_path) = args.output {
+        let content = fs::read_to_string(&args.file).await?;
+        let mut raw_links = Vec::new();
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
+                continue;
+            }
+            raw_links.push(trimmed.to_string());
+        }
+
+        let template_content = if let Some(path) = &args.template {
+            Some(fs::read_to_string(path).await?)
+        } else {
+            None
+        };
+
+        let yaml_content = clash_generator::generate_clash_yaml(raw_links, template_content)?;
+        fs::write(&output_path, yaml_content).await?;
+        println!("Clash config written to {:?}", output_path);
+        return Ok(());
     }
 
     let state = Arc::new(AppState {

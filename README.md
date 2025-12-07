@@ -45,6 +45,7 @@ Options:
   -p, --port <PORT>        Port to listen on [default: 3000]
   -u, --uuid <UUID>        Custom UUID for the subscription URL. If not provided, a random one will be generated.
   -t, --template <TEMPLATE>  Path to the Clash config template (optional)
+  -o, --output <OUTPUT>    Path to output the generated Clash config file. If specified, the server will not start.
   -h, --help               Print help (see more with '--help')
   -V, --version            Print version information
 ```
@@ -128,6 +129,14 @@ Options:
     Server running on http://0.0.0.0:8080/sub?token=my-secret-token
     Subscription link: http://127.0.0.1:8080/sub?token=my-secret-token
     ```
+
+### Static File Generation
+
+To generate a Clash configuration file directly without starting the web server, use the `--output` (or `-o`) option:
+
+```bash
+./target/release/txt2sub -f my_subs.txt -t clash_template.yaml -o config.yaml
+```
 
 ### Accessing the Subscription
 
