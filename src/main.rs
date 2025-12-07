@@ -1,6 +1,7 @@
 use axum::{
     extract::{Query, State},
-    http::StatusCode,
+    http::{header, HeaderMap, HeaderValue, StatusCode},
+    response::IntoResponse,
     routing::get,
     Router,
 };
@@ -9,6 +10,8 @@ use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc};
 use tokio::fs;
 use uuid::Uuid;
 use base64::{Engine as _, engine::general_purpose};
+
+mod clash_generator;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -69,8 +72,9 @@ async fn main() -> anyhow::Result<()> {
 
 async fn handle_subscription(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Query(params): Query<HashMap<String, String>>,
-) -> Result<String, (StatusCode, String)> {
+) -> Result<impl IntoResponse, (StatusCode, String)> {
     let token = params.get("token");
 
     // Check if token exists and matches the expected sub_uuid
@@ -85,19 +89,48 @@ async fn handle_subscription(
 
     // Process lines: trim, remove empty lines, remove comments
     let mut processed_lines = Vec::new();
+    let mut raw_links = Vec::new(); // Store raw strings for Clash generator
+
     for line in content.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
             continue;
         }
         processed_lines.push(trimmed);
+        raw_links.push(trimmed.to_string());
     }
 
-    // Join with newlines
+    // Determine if Clash config is requested
+    let user_agent = headers
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_lowercase();
+    
+    let is_clash = user_agent.contains("clash") 
+        || user_agent.contains("mihomo") 
+        || user_agent.contains("stash")
+        || params.get("flag").map(|v| v.as_str()) == Some("clash");
+
+    if is_clash {
+        // Generate Clash YAML
+        let yaml_content = clash_generator::generate_clash_yaml(raw_links)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to generate Clash config: {}", e)))?;
+        
+        let mut headers = HeaderMap::new();
+        headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/yaml; charset=utf-8"));
+        // Optional: add Content-Disposition to suggest a filename
+        headers.insert(header::CONTENT_DISPOSITION, HeaderValue::from_static("attachment; filename=\"config.yaml\""));
+        
+        return Ok((headers, yaml_content));
+    }
+
+    // Default: Base64 encode
     let joined_content = processed_lines.join("\n");
-
-    // Base64 encode
     let encoded = general_purpose::STANDARD.encode(joined_content);
+    
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain; charset=utf-8"));
 
-    Ok(encoded)
+    Ok((headers, encoded))
 }
