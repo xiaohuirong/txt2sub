@@ -247,7 +247,7 @@ pub fn generate_clash_yaml(links: Vec<String>, template: Option<String>) -> Resu
 
         // 1. Merge Proxies
         // Ensure "proxies" key exists and is a sequence
-        if doc.get("proxies").is_none() {
+        if doc.get("proxies").is_none() || doc.get("proxies").map_or(false, |v| v.is_null()) {
             if let Some(mapping) = doc.as_mapping_mut() {
                 mapping.insert(YamlValue::String("proxies".to_string()), YamlValue::Sequence(Vec::new()));
             }
@@ -262,7 +262,7 @@ pub fn generate_clash_yaml(links: Vec<String>, template: Option<String>) -> Resu
 
         // 2. Merge into "PROXY" Group
         // Ensure "proxy-groups" key exists and is a sequence
-        if doc.get("proxy-groups").is_none() {
+        if doc.get("proxy-groups").is_none() || doc.get("proxy-groups").map_or(false, |v| v.is_null()) {
             if let Some(mapping) = doc.as_mapping_mut() {
                 mapping.insert(YamlValue::String("proxy-groups".to_string()), YamlValue::Sequence(Vec::new()));
             }

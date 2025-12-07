@@ -7,7 +7,7 @@
 -   **Dynamic Subscription Generation**: Converts a text file of proxy links into a single, accessible online subscription.
 -   **UUID Protection**: Access to the subscription is secured by a UUID (Universally Unique Identifier), ensuring only authorized clients can fetch the content.
 -   **Intelligent Client Detection**: Automatically serves Clash-compatible YAML configurations when accessed by Clash clients (e.g., User-Agent containing "Clash", "Mihomo", "Stash") or when a `flag=clash` query parameter is present. Otherwise, it provides a standard Base64-encoded list of links.
--   **Clash Template Merging**: Supports merging generated proxy nodes into a user-provided Clash `config.yaml` template, allowing for custom rules, proxy groups, DNS settings, and more, while dynamically injecting the latest proxies.
+-   **Clash Template Merging**: Supports merging generated proxy nodes into a user-provided Clash `config.yaml` template, allowing for custom rules, proxy groups, DNS settings, and more. Robustly handles templates even if `proxies` or `proxy-groups` keys are missing or null.
 -   **Multi-Protocol Support**: Parses and generates Clash configurations for a wide range of proxy protocols:
     -   **VLESS**: Supports Reality, gRPC, WebSocket transports.
     -   **VMess**: Supports WebSocket transport.
