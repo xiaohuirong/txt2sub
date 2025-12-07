@@ -15,6 +15,79 @@ pub enum Proxy {
     Vmess(VmessProxy),
     #[serde(rename = "hysteria2")]
     Hysteria2(Hysteria2Proxy),
+    #[serde(rename = "trojan")]
+    Trojan(TrojanProxy),
+    #[serde(rename = "ss")]
+    Shadowsocks(ShadowsocksProxy),
+    #[serde(rename = "tuic")]
+    Tuic(TuicProxy),
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct TrojanProxy {
+    pub name: String,
+    pub server: String,
+    pub port: u16,
+    pub password: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub udp: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "skip-cert-verify")]
+    pub skip_cert_verify: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "servername")]
+    pub servername: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "client-fingerprint")]
+    pub client_fingerprint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "flow")]
+    pub flow: Option<String>,
+    
+    // Reality options for Trojan
+    #[serde(skip_serializing_if = "Option::is_none", rename = "reality-opts")]
+    pub reality_opts: Option<RealityOpts>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct ShadowsocksProxy {
+    pub name: String,
+    pub server: String,
+    pub port: u16,
+    pub password: String,
+    pub cipher: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub udp: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "plugin")]
+    pub plugin: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "plugin-opts")]
+    pub plugin_opts: Option<HashMap<String, String>>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct TuicProxy {
+    pub name: String,
+    pub server: String,
+    pub port: u16,
+    pub password: String, // Usually token
+    #[serde(rename = "uuid")]
+    pub uuid: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub udp: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "skip-cert-verify")]
+    pub skip_cert_verify: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "servername")]
+    pub servername: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "alpn")]
+    pub alpn: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "congestion-controller")]
+    pub congestion_controller: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "zero-rtt")]
+    pub zero_rtt: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -142,7 +215,14 @@ pub fn generate_clash_yaml(links: Vec<String>, template: Option<String>) -> Resu
             parse_vmess(&link)
         } else if link.starts_with("hy2://") || link.starts_with("hysteria2://") {
             parse_hy2(&link)
-        } else {
+        } else if link.starts_with("trojan://") {
+            parse_trojan(&link)
+        } else if link.starts_with("ss://") {
+            parse_ss(&link)
+        } else if link.starts_with("tuic://") {
+            parse_tuic(&link)
+        }
+        else {
             None
         };
 
@@ -152,6 +232,9 @@ pub fn generate_clash_yaml(links: Vec<String>, template: Option<String>) -> Resu
                 Proxy::Vless(v) => v.name.clone(),
                 Proxy::Vmess(v) => v.name.clone(),
                 Proxy::Hysteria2(v) => v.name.clone(),
+                Proxy::Trojan(v) => v.name.clone(),
+                Proxy::Shadowsocks(v) => v.name.clone(),
+                Proxy::Tuic(v) => v.name.clone(), // Added Tuic
             };
             proxy_names.push(name);
             proxies.push(p);
@@ -410,5 +493,124 @@ fn parse_hy2(link: &str) -> Option<Proxy> {
         skip_cert_verify: Some(true),
         obfs,
         obfs_password,
+    }))
+}
+
+fn parse_trojan(link: &str) -> Option<Proxy> {
+    let url = Url::parse(link).ok()?;
+    let name = url.fragment().unwrap_or("Trojan Node").to_string();
+    let query: HashMap<_, _> = url.query_pairs().collect();
+
+    let server = url.host_str()?.to_string();
+    let port = url.port()?;
+    let password = url.username().to_string();
+
+    let security = query.get("security").map(|s| s.to_string());
+    let sni = query.get("sni").map(|s| s.to_string());
+    let fp = query.get("fp").map(|s| s.to_string());
+    let flow = query.get("flow").map(|s| s.to_string());
+
+    // Reality options for Trojan
+    let reality_opts = if security.as_deref() == Some("reality") {
+        Some(RealityOpts {
+            public_key: query.get("pbk").unwrap_or(&"".into()).to_string(),
+            short_id: query.get("sid").unwrap_or(&"".into()).to_string(),
+        })
+    } else {
+        None
+    };
+
+    Some(Proxy::Trojan(TrojanProxy {
+        name,
+        server,
+        port,
+        password,
+        udp: Some(true),
+        tls: Some(true), // Trojan usually implies TLS
+        skip_cert_verify: Some(true),
+        servername: sni,
+        network: None, // Trojan network is usually tcp
+        client_fingerprint: fp,
+        flow,
+        reality_opts,
+    }))
+}
+
+fn parse_ss(link: &str) -> Option<Proxy> {
+    let mut config_part = link.trim_start_matches("ss://");
+    let name_part;
+
+    // Split name and config
+    if let Some(pos) = config_part.find('#') {
+        name_part = config_part[pos + 1..].to_string();
+        config_part = &config_part[..pos];
+    } else {
+        name_part = "Shadowsocks Node".to_string();
+    }
+
+    let decoded_config = general_purpose::STANDARD.decode(config_part).ok()?;
+    let decoded_str = String::from_utf8(decoded_config).ok()?;
+
+    let parts: Vec<&str> = decoded_str.split('@').collect();
+    if parts.len() != 2 { return None; } // Expecting "method:password@server:port"
+
+    let method_pass: Vec<&str> = parts[0].splitn(2, ':').collect();
+    if method_pass.len() != 2 { return None; }
+    let cipher = method_pass[0].to_string();
+    let password = method_pass[1].to_string();
+
+    let server_port: Vec<&str> = parts[1].splitn(2, ':').collect();
+    if server_port.len() != 2 { return None; }
+    let server = server_port[0].to_string();
+    let port = server_port[1].parse::<u16>().ok()?;
+
+    Some(Proxy::Shadowsocks(ShadowsocksProxy {
+        name: name_part,
+        server,
+        port,
+        password,
+        cipher,
+        udp: Some(true),
+        network: None,
+        plugin: None,
+        plugin_opts: None,
+    }))
+}
+
+fn parse_tuic(link: &str) -> Option<Proxy> {
+    let url = Url::parse(link).ok()?;
+    let name = url.fragment().unwrap_or("TUIC Node").to_string();
+    let query: HashMap<_, _> = url.query_pairs().collect();
+
+    let server = url.host_str()?.to_string();
+    let port = url.port()?;
+    
+    // TUIC userinfo is typically uuid:password
+    let userinfo = url.username().to_string();
+    let userinfo_parts: Vec<&str> = userinfo.splitn(2, ':').collect();
+    let uuid = userinfo_parts.get(0)?.to_string();
+    let password = userinfo_parts.get(1).unwrap_or(&"").to_string(); // password might be empty or missing
+
+    let sni = query.get("sni").map(|s| s.to_string());
+    let congestion_controller = query.get("congestion_control").map(|s| s.to_string()); // Renamed
+    let alpn_str = query.get("alpn").map(|s| s.to_string());
+    let zero_rtt = query.get("zero_rtt").map(|s| s == "1" || s == "true");
+    let insecure = query.get("insecure").map(|s| s == "1" || s == "true"); // Used for skip-cert-verify
+
+    let alpn = alpn_str.map(|s| s.split(',').map(|a| a.to_string()).collect());
+
+    Some(Proxy::Tuic(TuicProxy {
+        name,
+        server,
+        port,
+        password,
+        uuid,
+        udp: Some(true),
+        tls: Some(true), // TUIC implies TLS
+        skip_cert_verify: insecure,
+        servername: sni,
+        alpn,
+        congestion_controller,
+        zero_rtt,
     }))
 }
