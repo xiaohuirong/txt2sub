@@ -169,8 +169,6 @@ async fn handle_subscription(
         
         let mut headers = HeaderMap::new();
         headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/yaml; charset=utf-8"));
-        // Optional: add Content-Disposition to suggest a filename
-        headers.insert(header::CONTENT_DISPOSITION, HeaderValue::from_static("attachment; filename=\"config.yaml\""));
         
         return Ok((headers, yaml_content));
     }
