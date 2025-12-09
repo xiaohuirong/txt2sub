@@ -804,7 +804,7 @@ pub fn parse_wireguard(content: &str) -> Option<Proxy> {
         peers: parsed_peers,
         udp: Some(true), // Default to true as per user example
         mtu,
-        remote_dns_resolve: Some(true), // Default to true as per user example
+        remote_dns_resolve: None, // Do not set by default
         dns: dns_from_interface,
     }))
 }
