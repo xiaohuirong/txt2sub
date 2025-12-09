@@ -56,6 +56,8 @@ pub struct WireGuardProxy {
     pub remote_dns_resolve: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dns: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "dialer-proxy")]
+    pub dialer_proxy: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -802,10 +804,11 @@ pub fn parse_wireguard(content: &str) -> Option<Proxy> {
         ipv6,
         private_key: private_key.unwrap(),
         peers: parsed_peers,
-        udp: Some(true), // Default to true as per user example
+        udp: Some(false), // Default to false
         mtu,
-        remote_dns_resolve: None, // Do not set by default
+        remote_dns_resolve: None,
         dns: dns_from_interface,
+        dialer_proxy: Some("dns".to_string()), // Default to "dns"
     }))
 }
 
