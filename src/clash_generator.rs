@@ -26,15 +26,9 @@ pub enum Proxy {
 }
 
 #[derive(Debug, Serialize, Clone)]
-pub struct WireGuardProxy {
-    pub name: String,
+pub struct WireGuardPeer {
     pub server: String,
     pub port: u16,
-    pub ip: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ipv6: Option<String>,
-    #[serde(rename = "private-key")]
-    pub private_key: String,
     #[serde(rename = "public-key")]
     pub public_key: String,
     #[serde(skip_serializing_if = "Option::is_none", rename = "pre-shared-key")]
@@ -42,11 +36,26 @@ pub struct WireGuardProxy {
     #[serde(rename = "allowed-ips")]
     pub allowed_ips: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub reserved: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct WireGuardProxy {
+    pub name: String,
+    pub ip: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ipv6: Option<String>,
+    #[serde(rename = "private-key")]
+    pub private_key: String,
+    pub peers: Vec<WireGuardPeer>, // Changed to Vec<WireGuardPeer>
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub udp: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mtu: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "remote-dns-resolve")]
+    pub remote_dns_resolve: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub reserved: Option<Vec<u8>>,
+    pub dns: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -670,12 +679,16 @@ pub fn parse_wireguard(content: &str) -> Option<Proxy> {
     let mut ip = None;
     let mut ipv6 = None;
     let mut mtu = None;
-    
-    // Peer fields
-    let mut public_key = None;
-    let mut endpoint = None;
-    let mut allowed_ips = Vec::new();
-    let mut pre_shared_key = None;
+    let mut dns_from_interface = None; // Added DNS field
+
+    // Current Peer fields being collected (in case of multiple properties for a single peer)
+    let mut peer_public_key = None;
+    let mut peer_endpoint = None;
+    let mut peer_allowed_ips_buffer = Vec::new(); // Collects all allowed IPs for the current peer
+    let mut peer_pre_shared_key = None;
+    let mut peer_reserved = None;
+
+    let mut parsed_peers = Vec::new(); // Collects all parsed WireGuardPeer objects
 
     for line in content.lines() {
         let line = line.trim();
@@ -684,6 +697,24 @@ pub fn parse_wireguard(content: &str) -> Option<Proxy> {
         }
 
         if line.starts_with('[') && line.ends_with(']') {
+            // Before changing section, if we were in a [Peer] section, finalize it
+            if current_section.to_lowercase() == "peer" {
+                if let Some(peer) = build_wireguard_peer(
+                    peer_public_key.take(),
+                    peer_endpoint.take(),
+                    peer_allowed_ips_buffer.drain(..).collect(), // Drain and clear
+                    peer_pre_shared_key.take(),
+                    peer_reserved.take(),
+                ) {
+                    parsed_peers.push(peer);
+                }
+                // Clear for the next peer
+                peer_public_key = None;
+                peer_endpoint = None;
+                peer_allowed_ips_buffer.clear();
+                peer_pre_shared_key = None;
+                peer_reserved = None;
+            }
             current_section = &line[1..line.len()-1];
             continue;
         }
@@ -704,8 +735,7 @@ pub fn parse_wireguard(content: &str) -> Option<Proxy> {
                         let addrs: Vec<&str> = value.split(',').collect();
                         for addr in addrs {
                             let addr = addr.trim();
-                            // Split CIDR if present
-                            let ip_part = addr.split('/').next().unwrap_or(addr);
+                            let ip_part = addr.split('/').next().unwrap_or(addr); // Strip CIDR prefix for IP
                             if ip_part.contains(':') {
                                 ipv6 = Some(ip_part.to_string());
                             } else {
@@ -714,17 +744,28 @@ pub fn parse_wireguard(content: &str) -> Option<Proxy> {
                         }
                     },
                     "mtu" => mtu = value.parse::<u32>().ok(),
+                    "dns" => dns_from_interface = Some(value.to_string()), // Parse DNS
                     _ => {}
                 }
             },
             "peer" => {
                 match key.as_str() {
-                    "publickey" => public_key = Some(value.to_string()),
-                    "endpoint" => endpoint = Some(value.to_string()),
+                    "publickey" => peer_public_key = Some(value.to_string()),
+                    "endpoint" => peer_endpoint = Some(value.to_string()),
                     "allowedips" => {
-                        allowed_ips = value.split(',').map(|s| s.trim().to_string()).collect();
+                        // Accumulate allowed IPs from potentially multiple lines
+                        for ip_str in value.split(',') {
+                            peer_allowed_ips_buffer.push(ip_str.trim().to_string());
+                        }
                     },
-                    "presharedkey" => pre_shared_key = Some(value.to_string()),
+                    "presharedkey" => peer_pre_shared_key = Some(value.to_string()),
+                    "reserved" => { 
+                        // Assuming "reserved" can be parsed as a list of u8. Example: "209,98,59" or "U4An" (base64 of 3 bytes)
+                        // The image has #[reserved: [209,98,59]] - implying a comma-separated list of numbers
+                        peer_reserved = Some(value.split(',')
+                            .filter_map(|s| s.trim().parse::<u8>().ok())
+                            .collect());
+                    }
                     _ => {}
                 }
             }
@@ -732,9 +773,47 @@ pub fn parse_wireguard(content: &str) -> Option<Proxy> {
         }
     }
 
-    // Validation
-    if private_key.is_none() || public_key.is_none() || endpoint.is_none() || ip.is_none() {
+    // Finalize the last [Peer] section if any
+    if current_section.to_lowercase() == "peer" {
+        if let Some(peer) = build_wireguard_peer(
+            peer_public_key.take(),
+            peer_endpoint.take(),
+            peer_allowed_ips_buffer.drain(..).collect(),
+            peer_pre_shared_key.take(),
+            peer_reserved.take(),
+        ) {
+            parsed_peers.push(peer);
+        }
+    }
+    
+    // Validation - ensure essential interface and at least one peer exists
+    if private_key.is_none() || ip.is_none() || parsed_peers.is_empty() {
         return None;
+    }
+
+    Some(Proxy::WireGuard(WireGuardProxy {
+        name: "WireGuard".to_string(), // Keep default name for now
+        ip: ip.unwrap(),
+        ipv6,
+        private_key: private_key.unwrap(),
+        peers: parsed_peers,
+        udp: Some(true), // Default to true as per user example
+        mtu,
+        remote_dns_resolve: Some(true), // Default to true as per user example
+        dns: dns_from_interface,
+    }))
+}
+
+// Helper function to build a WireGuardPeer
+fn build_wireguard_peer(
+    public_key: Option<String>,
+    endpoint: Option<String>,
+    allowed_ips: Vec<String>,
+    pre_shared_key: Option<String>,
+    reserved: Option<Vec<u8>>,
+) -> Option<WireGuardPeer> {
+    if public_key.is_none() || endpoint.is_none() {
+        return None; // Essential fields for a peer
     }
 
     let endpoint_str = endpoint.unwrap();
@@ -742,7 +821,6 @@ pub fn parse_wireguard(content: &str) -> Option<Proxy> {
         let host = &endpoint_str[..idx];
         let port_str = &endpoint_str[idx+1..];
         
-        // Handle IPv6 literal in endpoint [::1]:port
         let host = if host.starts_with('[') && host.ends_with(']') {
             &host[1..host.len()-1]
         } else {
@@ -751,26 +829,22 @@ pub fn parse_wireguard(content: &str) -> Option<Proxy> {
         
         (host.to_string(), port_str.parse::<u16>().unwrap_or(51820))
     } else {
-        (endpoint_str, 51820)
+        (endpoint_str, 51820) // Default port if not specified
     };
     
-    if allowed_ips.is_empty() {
-        allowed_ips.push("0.0.0.0/0".to_string());
-        allowed_ips.push("::/0".to_string());
-    }
+    let final_allowed_ips = if allowed_ips.is_empty() {
+        // Default allowed IPs if none specified for the peer
+        vec!["0.0.0.0/0".to_string(), "::/0".to_string()]
+    } else {
+        allowed_ips
+    };
 
-    Some(Proxy::WireGuard(WireGuardProxy {
-        name: "WireGuard".to_string(),
+    Some(WireGuardPeer {
         server,
         port,
-        ip: ip.unwrap(),
-        ipv6,
-        private_key: private_key.unwrap(),
         public_key: public_key.unwrap(),
         pre_shared_key,
-        allowed_ips,
-        udp: Some(true),
-        mtu,
-        reserved: None,
-    }))
+        allowed_ips: final_allowed_ips,
+        reserved,
+    })
 }
