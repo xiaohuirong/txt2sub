@@ -18,7 +18,11 @@ mod clash_generator;
 struct Args {
     /// Path to the text file containing subscription links
     #[arg(short, long)]
-    file: PathBuf,
+    file: Option<PathBuf>,
+
+    /// Path to the WireGuard configuration file
+    #[arg(short, long)]
+    wireguard: Option<PathBuf>,
 
     /// Port to listen on
     #[arg(short, long, default_value_t = 3000)]
@@ -43,7 +47,8 @@ struct Args {
 
 #[derive(Clone)]
 struct AppState {
-    file_path: PathBuf,
+    file_path: Option<PathBuf>,
+    wireguard_path: Option<PathBuf>,
     sub_uuid: String,
     template_path: Option<PathBuf>,
 }
@@ -55,10 +60,24 @@ async fn main() -> anyhow::Result<()> {
     // Determine the UUID to use
     let sub_uuid = args.uuid.unwrap_or_else(|| Uuid::new_v4().to_string());
 
-    // Check if file exists to give early feedback
-    if !args.file.exists() {
-        eprintln!("Error: File {:?} does not exist.", args.file);
+    // Check if at least one source is provided
+    if args.file.is_none() && args.wireguard.is_none() {
+        eprintln!("Error: You must provide either --file or --wireguard.");
         std::process::exit(1);
+    }
+
+    // Check file existence
+    if let Some(path) = &args.file {
+        if !path.exists() {
+            eprintln!("Error: File {:?} does not exist.", path);
+            std::process::exit(1);
+        }
+    }
+    if let Some(path) = &args.wireguard {
+        if !path.exists() {
+            eprintln!("Error: WireGuard file {:?} does not exist.", path);
+            std::process::exit(1);
+        }
     }
     
     if let Some(tmpl) = &args.template {
@@ -69,14 +88,26 @@ async fn main() -> anyhow::Result<()> {
     }
 
     if let Some(output_path) = args.output {
-        let content = fs::read_to_string(&args.file).await?;
         let mut raw_links = Vec::new();
-        for line in content.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
-                continue;
+        if let Some(path) = &args.file {
+            let content = fs::read_to_string(path).await?;
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
+                    continue;
+                }
+                raw_links.push(trimmed.to_string());
             }
-            raw_links.push(trimmed.to_string());
+        }
+
+        let mut extra_proxies = Vec::new();
+        if let Some(path) = &args.wireguard {
+            let content = fs::read_to_string(path).await?;
+            if let Some(proxy) = clash_generator::parse_wireguard(&content) {
+                extra_proxies.push(proxy);
+            } else {
+                 eprintln!("Warning: Failed to parse WireGuard config from {:?}", path);
+            }
         }
 
         let template_content = if let Some(path) = &args.template {
@@ -85,14 +116,15 @@ async fn main() -> anyhow::Result<()> {
             None
         };
 
-        let yaml_content = clash_generator::generate_clash_yaml(raw_links, template_content)?;
+        let yaml_content = clash_generator::generate_clash_yaml(raw_links, extra_proxies, template_content)?;
         fs::write(&output_path, yaml_content).await?;
         println!("Clash config written to {:?}", output_path);
-        return Ok(());
+        return Ok(())
     }
 
     let state = Arc::new(AppState {
         file_path: args.file.clone(),
+        wireguard_path: args.wireguard.clone(),
         sub_uuid: sub_uuid.clone(), // Store the UUID in the app state
         template_path: args.template.clone(),
     });
@@ -131,22 +163,22 @@ async fn handle_subscription(
         return Err((StatusCode::FORBIDDEN, "Invalid or missing token".to_string()));
     }
 
-    // Read the file content
-    let content = fs::read_to_string(&state.file_path)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to read file: {}", e)))?;
-
-    // Process lines: trim, remove empty lines, remove comments
+    let mut raw_links = Vec::new(); 
     let mut processed_lines = Vec::new();
-    let mut raw_links = Vec::new(); // Store raw strings for Clash generator
 
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
-            continue;
+    if let Some(path) = &state.file_path {
+        let content = fs::read_to_string(path)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to read file: {}", e)))?;
+
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
+                continue;
+            }
+            processed_lines.push(trimmed.to_string());
+            raw_links.push(trimmed.to_string());
         }
-        processed_lines.push(trimmed);
-        raw_links.push(trimmed.to_string());
     }
 
     // Determine if Clash config is requested
@@ -172,8 +204,17 @@ async fn handle_subscription(
             None
         };
 
+        let mut extra_proxies = Vec::new();
+        if let Some(path) = &state.wireguard_path {
+            let content = fs::read_to_string(path).await
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to read WG file: {}", e)))?;
+             if let Some(proxy) = clash_generator::parse_wireguard(&content) {
+                extra_proxies.push(proxy);
+            }
+        }
+
         // Generate Clash YAML
-        let yaml_content = clash_generator::generate_clash_yaml(raw_links, template_content)
+        let yaml_content = clash_generator::generate_clash_yaml(raw_links, extra_proxies, template_content)
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to generate Clash config: {}", e)))?;
         
         let mut headers = HeaderMap::new();
@@ -183,6 +224,8 @@ async fn handle_subscription(
     }
 
     // Default: Base64 encode
+    // Note: If only WireGuard file is provided, processed_lines will be empty.
+    // This is expected behavior as Base64 sub usually implies a list of links.
     let joined_content = processed_lines.join("\n");
     let encoded = general_purpose::STANDARD.encode(joined_content);
     

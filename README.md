@@ -15,6 +15,7 @@
     -   **Trojan**: Supports Reality.
     -   **Shadowsocks (SS)**: Supports `method:password@server:port` format (both plain and base64 encoded).
     -   **TUIC**: Supports various parameters like congestion control, ALPN, SNI.
+    -   **WireGuard**: Supports standard WireGuard configuration files (`.conf`) including private/public keys, IP addresses, and peer settings.
 
 ## Installation
 
@@ -41,14 +42,15 @@ To build `txt2sub`, you need to have [Rust](https://www.rust-lang.org/tools/inst
 Usage: txt2sub [OPTIONS]
 
 Options:
-  -f, --file <FILE>        Path to the text file containing subscription links
-  -p, --port <PORT>        Port to listen on [default: 3000]
-  -L, --host <HOST>        Host to listen on [default: 0.0.0.0]
-  -u, --uuid <UUID>        Custom UUID for the subscription URL. If not provided, a random one will be generated.
+  -f, --file <FILE>          Path to the text file containing subscription links (Optional if --wireguard is used)
+  -w, --wireguard <WIREGUARD> Path to the WireGuard configuration file (Optional if --file is used)
+  -p, --port <PORT>          Port to listen on [default: 3000]
+  -L, --host <HOST>          Host to listen on [default: 0.0.0.0]
+  -u, --uuid <UUID>          Custom UUID for the subscription URL. If not provided, a random one will be generated.
   -t, --template <TEMPLATE>  Path to the Clash config template (optional)
-  -o, --output <OUTPUT>    Path to output the generated Clash config file. If specified, the server will not start.
-  -h, --help               Print help (see more with '--help')
-  -V, --version            Print version information
+  -o, --output <OUTPUT>      Path to output the generated Clash config file. If specified, the server will not start.
+  -h, --help                 Print help (see more with '--help')
+  -V, --version              Print version information
 ```
 
 ### Example
@@ -122,6 +124,12 @@ Options:
 
     ```bash
     ./target/release/txt2sub -f my_subs.txt -t clash_template.yaml -u my-secret-token -p 8080 -L 0.0.0.0
+    ```
+    
+    Or with a WireGuard configuration file:
+    
+    ```bash
+    ./target/release/txt2sub -f my_subs.txt -w wg0.conf -t clash_template.yaml -u my-secret-token
     ```
 
     The server will start and print the generated subscription links:

@@ -21,6 +21,32 @@ pub enum Proxy {
     Shadowsocks(ShadowsocksProxy),
     #[serde(rename = "tuic")]
     Tuic(TuicProxy),
+    #[serde(rename = "wireguard")]
+    WireGuard(WireGuardProxy),
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct WireGuardProxy {
+    pub name: String,
+    pub server: String,
+    pub port: u16,
+    pub ip: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ipv6: Option<String>,
+    #[serde(rename = "private-key")]
+    pub private_key: String,
+    #[serde(rename = "public-key")]
+    pub public_key: String,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "pre-shared-key")]
+    pub pre_shared_key: Option<String>,
+    #[serde(rename = "allowed-ips")]
+    pub allowed_ips: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub udp: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mtu: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reserved: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -206,9 +232,24 @@ pub struct ProxyGroup {
 }
 
 
-pub fn generate_clash_yaml(links: Vec<String>, template: Option<String>) -> Result<String> {
+pub fn generate_clash_yaml(links: Vec<String>, extra_proxies: Vec<Proxy>, template: Option<String>) -> Result<String> {
     let mut proxies = Vec::new();
     let mut proxy_names = Vec::new();
+
+    // Add extra proxies (e.g. from WireGuard config)
+    for proxy in extra_proxies {
+        let name = match &proxy {
+            Proxy::Vless(v) => v.name.clone(),
+            Proxy::Vmess(v) => v.name.clone(),
+            Proxy::Hysteria2(v) => v.name.clone(),
+            Proxy::Trojan(v) => v.name.clone(),
+            Proxy::Shadowsocks(v) => v.name.clone(),
+            Proxy::Tuic(v) => v.name.clone(),
+            Proxy::WireGuard(v) => v.name.clone(),
+        };
+        proxy_names.push(name);
+        proxies.push(proxy);
+    }
 
     for link in links {
         let proxy = if link.starts_with("vless://") {
@@ -236,7 +277,8 @@ pub fn generate_clash_yaml(links: Vec<String>, template: Option<String>) -> Resu
                 Proxy::Hysteria2(v) => v.name.clone(),
                 Proxy::Trojan(v) => v.name.clone(),
                 Proxy::Shadowsocks(v) => v.name.clone(),
-                Proxy::Tuic(v) => v.name.clone(), // Added Tuic
+                Proxy::Tuic(v) => v.name.clone(),
+                Proxy::WireGuard(v) => v.name.clone(),
             };
             proxy_names.push(name);
             proxies.push(p);
@@ -617,5 +659,118 @@ fn parse_tuic(link: &str) -> Option<Proxy> {
         alpn,
         congestion_controller,
         zero_rtt,
+    }))
+}
+
+pub fn parse_wireguard(content: &str) -> Option<Proxy> {
+    let mut current_section = "";
+    
+    // Interface fields
+    let mut private_key = None;
+    let mut ip = None;
+    let mut ipv6 = None;
+    let mut mtu = None;
+    
+    // Peer fields
+    let mut public_key = None;
+    let mut endpoint = None;
+    let mut allowed_ips = Vec::new();
+    let mut pre_shared_key = None;
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        if line.starts_with('[') && line.ends_with(']') {
+            current_section = &line[1..line.len()-1];
+            continue;
+        }
+
+        let parts: Vec<&str> = line.splitn(2, '=').collect();
+        if parts.len() != 2 {
+            continue;
+        }
+
+        let key = parts[0].trim().to_lowercase();
+        let value = parts[1].trim();
+
+        match current_section.to_lowercase().as_str() {
+            "interface" => {
+                match key.as_str() {
+                    "privatekey" => private_key = Some(value.to_string()),
+                    "address" => {
+                        let addrs: Vec<&str> = value.split(',').collect();
+                        for addr in addrs {
+                            let addr = addr.trim();
+                            // Split CIDR if present
+                            let ip_part = addr.split('/').next().unwrap_or(addr);
+                            if ip_part.contains(':') {
+                                ipv6 = Some(ip_part.to_string());
+                            } else {
+                                ip = Some(ip_part.to_string());
+                            }
+                        }
+                    },
+                    "mtu" => mtu = value.parse::<u32>().ok(),
+                    _ => {}
+                }
+            },
+            "peer" => {
+                match key.as_str() {
+                    "publickey" => public_key = Some(value.to_string()),
+                    "endpoint" => endpoint = Some(value.to_string()),
+                    "allowedips" => {
+                        allowed_ips = value.split(',').map(|s| s.trim().to_string()).collect();
+                    },
+                    "presharedkey" => pre_shared_key = Some(value.to_string()),
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Validation
+    if private_key.is_none() || public_key.is_none() || endpoint.is_none() || ip.is_none() {
+        return None;
+    }
+
+    let endpoint_str = endpoint.unwrap();
+    let (server, port) = if let Some(idx) = endpoint_str.rfind(':') {
+        let host = &endpoint_str[..idx];
+        let port_str = &endpoint_str[idx+1..];
+        
+        // Handle IPv6 literal in endpoint [::1]:port
+        let host = if host.starts_with('[') && host.ends_with(']') {
+            &host[1..host.len()-1]
+        } else {
+            host
+        };
+        
+        (host.to_string(), port_str.parse::<u16>().unwrap_or(51820))
+    } else {
+        (endpoint_str, 51820)
+    };
+    
+    if allowed_ips.is_empty() {
+        allowed_ips.push("0.0.0.0/0".to_string());
+        allowed_ips.push("::/0".to_string());
+    }
+
+    Some(Proxy::WireGuard(WireGuardProxy {
+        name: "WireGuard".to_string(),
+        server,
+        port,
+        ip: ip.unwrap(),
+        ipv6,
+        private_key: private_key.unwrap(),
+        public_key: public_key.unwrap(),
+        pre_shared_key,
+        allowed_ips,
+        udp: Some(true),
+        mtu,
+        reserved: None,
     }))
 }
