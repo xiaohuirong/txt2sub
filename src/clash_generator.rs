@@ -55,7 +55,7 @@ pub struct WireGuardProxy {
     #[serde(skip_serializing_if = "Option::is_none", rename = "remote-dns-resolve")]
     pub remote_dns_resolve: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub dns: Option<String>,
+    pub dns: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -744,7 +744,12 @@ pub fn parse_wireguard(content: &str) -> Option<Proxy> {
                         }
                     },
                     "mtu" => mtu = value.parse::<u32>().ok(),
-                    "dns" => dns_from_interface = Some(value.to_string()), // Parse DNS
+                    "dns" => {
+                        dns_from_interface = Some(value.split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect());
+                    },
                     _ => {}
                 }
             },
